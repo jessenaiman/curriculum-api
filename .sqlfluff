@@ -1,0 +1,6 @@
+[sqlfluff]
+dialect = postgres
+templater = raw
+
+[sqlfluff:rules]
+single_row_references = true

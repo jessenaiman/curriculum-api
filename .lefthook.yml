@@ -1,0 +1,41 @@
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      run: gitleaks protect --staged --verbose
+      glob: "*"
+    sqlfluff:
+      run: sqlfluff lint --dialect postgres {staged_files}
+      glob: "**/*.sql"
+    pycompile:
+      run: >
+        python -m py_compile
+        scripts/export-curriculum-xlsx.py
+        scripts/migrate-data.py
+        scripts/db/integrity-check.py
+        scripts/db/audit-create-issues.py
+    drizzle-check:
+      run: npx drizzle-kit check
+
+pre-push:
+  commands:
+    clean-room:
+      env:
+        DATABASE_URL: postgresql://curriculum:curriculum@127.0.0.1:5432/curriculum
+        DB_URL: postgresql://curriculum:curriculum@127.0.0.1:5432/curriculum
+      run: |
+        set -e
+        cleanup() {
+          docker compose down >/dev/null 2>&1 || true
+        }
+        trap cleanup EXIT
+        docker compose up -d db
+        for i in $(seq 1 30); do
+          if docker compose exec -T db pg_isready -U curriculum -d curriculum >/dev/null 2>&1; then
+            break
+          fi
+          sleep 1
+        done
+        docker compose exec -T db pg_isready -U curriculum -d curriculum >/dev/null
+        npx drizzle-kit migrate
+        python scripts/db/integrity-check.py

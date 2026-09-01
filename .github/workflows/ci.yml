@@ -1,0 +1,99 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  node-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npx drizzle-kit check
+
+  py-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: |
+          python -m py_compile scripts/export-curriculum-xlsx.py
+          python -m py_compile scripts/migrate-data.py
+          python -m py_compile scripts/db/integrity-check.py
+          python -m py_compile scripts/db/audit-create-issues.py
+      - name: sqlfluff migrations
+        run: |
+          if [ -d src/db/migrations-pg ]; then
+            sqlfluff lint src/db/migrations-pg --dialect postgres
+          else
+            echo "skip: src/db/migrations-pg does not exist"
+          fi
+
+  migrations:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://curriculum:curriculum@127.0.0.1:5432/curriculum
+      DB_URL: postgresql://curriculum:curriculum@127.0.0.1:5432/curriculum
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: npm ci
+      - run: pip install -r requirements.txt
+      - name: Start postgres (docker run)
+        run: |
+          docker rm -f curriculum-ci-db >/dev/null 2>&1 || true
+          docker run -d \
+            --name curriculum-ci-db \
+            -e POSTGRES_USER=curriculum \
+            -e POSTGRES_PASSWORD=curriculum \
+            -e POSTGRES_DB=curriculum \
+            -p 127.0.0.1:5432:5432 \
+            postgres:18-alpine
+      - name: Wait for postgres readiness
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec curriculum-ci-db pg_isready -U curriculum -d curriculum >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "postgres did not become ready in time" >&2
+          exit 1
+      - name: Apply migrations
+        run: npx drizzle-kit migrate
+      - name: Integrity check
+        run: python scripts/db/integrity-check.py
+      - name: Stop postgres (always)
+        if: always()
+        run: docker rm -f curriculum-ci-db || true
+
+  secrets-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install official gitleaks binary
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+      - run: ./gitleaks detect --source . --verbose

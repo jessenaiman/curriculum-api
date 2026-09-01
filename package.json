@@ -1,0 +1,25 @@
+{
+  "name": "curriculum-api",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "export": "python scripts/export-curriculum-xlsx.py",
+    "db:generate": "npx drizzle-kit generate",
+    "db:migrate": "npx drizzle-kit migrate",
+    "db:load": "python scripts/migrate-data.py",
+    "db:studio": "npx drizzle-kit studio",
+    "audit": "python scripts/db/audit-create-issues.py --dry-run",
+    "check": "python scripts/db/integrity-check.py"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.10"
+  }
+}

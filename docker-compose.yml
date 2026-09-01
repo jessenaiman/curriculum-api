@@ -1,0 +1,23 @@
+# Local dev database — Docker Desktop must be running
+services:
+  db:
+    image: postgres:18
+    container_name: curriculum-db
+    environment:
+      POSTGRES_DB: curriculum
+      POSTGRES_USER: curriculum
+      POSTGRES_PASSWORD: curriculum
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U curriculum -d curriculum"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./scripts/db/init-db.sql:/docker-entrypoint-initdb.d/10-init-db.sql:ro
+
+volumes:
+  pgdata:

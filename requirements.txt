@@ -1,0 +1,5 @@
+# Python dependencies for curriculum-api (pinned)
+psycopg[binary]==3.3.5
+openpyxl==3.1.5
+sqlfluff==4.3.0
+squawk-cli==2.64.0
