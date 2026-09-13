@@ -16,6 +16,7 @@ docs/
 local/
 db-diagram.mmd
 skills-lock.json
+.worktrees/
 
 scripts/*
 !scripts/export-curriculum-xlsx.py
