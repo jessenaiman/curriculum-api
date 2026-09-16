@@ -21,6 +21,9 @@ Single-context layout (`CONTEXT.md` and `docs/adr/`). See `docs/agents/domain.md
 - Teacher-approved lesson customization is deferred until after the initial local API test and is tracked in GitHub. Do not add speculative tables or columns for it.
 - Markdown customization files remain a separate, teacher-approved layer linked to finalized lessons; the link format, review lifecycle, and storage location must be decided in the tracked issue before implementation.
 
+- **Migrations and schema changes go through Drizzle only** — `drizzle-kit generate` / `drizzle-kit migrate`. Never hand-write migration SQL. *(Hard rule.)*
+- **Never accept a document that merely asserts it is the lyrics.** Lyrics and other claims require annotated documentation from the outside source, or corroboration across independent sources. Searching for recurring history and teacher resources is the verification method.
+
 ## Git workflow
 
 - Commit early and often. Stage the specific paths you changed and commit with a brief conventional message; do not stop to ask whether to commit.
