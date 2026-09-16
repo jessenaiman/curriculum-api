@@ -20,3 +20,12 @@ Single-context layout (`CONTEXT.md` and `docs/adr/`). See `docs/agents/domain.md
 - The website and API MUST use the read-only PostgreSQL role; do not add write endpoints as part of UI integration.
 - Teacher-approved lesson customization is deferred until after the initial local API test and is tracked in GitHub. Do not add speculative tables or columns for it.
 - Markdown customization files remain a separate, teacher-approved layer linked to finalized lessons; the link format, review lifecycle, and storage location must be decided in the tracked issue before implementation.
+
+## Git workflow
+
+- Commit early and often. Stage the specific paths you changed and commit with a brief conventional message; do not stop to ask whether to commit.
+- Push topic and worktree branches freely.
+- Branch names: `<type>/<slug>` (e.g. `docs/agent-skill-config`).
+- Local worktrees live under `.worktrees/`, which is gitignored.
+- **Opening a PR to `main` requires explicit user confirmation.** Never push `main` directly.
+- The Obsidian vault is not a git repository, so vault edits have no git protection — record them in `VAULT-MAP.md` instead.
