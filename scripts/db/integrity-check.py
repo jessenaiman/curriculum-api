@@ -1,23 +1,34 @@
 #!/usr/bin/env python3
-"""Read-only PostgreSQL integrity checks for the curriculum catalog.
+"""Read-only integrity checks for the curriculum catalog.
 
-Uses psycopg3.  All queries are read-only; no writes, no DDL.
+Two modes, chosen by whether a PostgreSQL URL is supplied:
 
-Exit 0 = all checks pass.  Exit 1 = at least one FAIL.
+* **Working store (default).** Reads the SQLite store that actually holds the
+  data, and checks that its tables match the declared schema. Needs no
+  credentials and no PostgreSQL driver, so it runs wherever the store exists.
+  If the store is absent the check is skipped, never failed.
+* **PostgreSQL.** Configured by `$DB_URL` or `--database-url`. Runs the catalog
+  checks below. Requires psycopg3, which is imported lazily so this module can
+  still be loaded, and the SQLite checks still run, without it.
+
+All queries are read-only; no writes, no DDL.
+
+Exit 0 = all checks pass.  Exit 1 = at least one FAIL or ERROR.
 Advisory sections never set exit 1.
 
 DB URL: $DB_URL env var, overridden by --database-url flag.
+Working store: --sqlite flag, defaulting to data/omhas.db.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
+import sqlite3
 import sys
+from pathlib import Path
 from typing import Any
-
-import psycopg
-from psycopg.rows import dict_row
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +43,15 @@ def _get_db_url(args: argparse.Namespace) -> str:
     return url
 
 
-def _connect(url: str) -> psycopg.Connection:
+def _connect(url: str) -> Any:
+    """Open a read-only PostgreSQL connection.
+
+    psycopg is imported here rather than at module scope so that the
+    working-store checks stay usable where the driver is not installed.
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
     return psycopg.connect(
         url,
         options="-c default_transaction_read_only=on",
@@ -343,6 +362,179 @@ def check_topics_lacking_standards(conn: psycopg.Connection) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Working store: the declared schema, and what is actually in the store
+# ---------------------------------------------------------------------------
+
+# The declared schema lives in the Drizzle schema files: the artifact a
+# developer edits when the data model changes.
+_DECLARED_SCHEMA_GLOB = "schema-pg*.ts"
+_DECLARED_TABLE_RE = re.compile(r"pgTable\(\s*'([a-z_]+)'")
+
+# Names that are not part of the declared data model. Treating them as drift
+# would make every real store look broken:
+#   sqlite_*  SQLite's own bookkeeping (e.g. sqlite_sequence)
+#   __*       migration-tool bookkeeping (e.g. __drizzle_migrations)
+#   *_fts*    a full-text-search virtual table and its shadow tables
+_INTERNAL_PREFIXES = ("sqlite_", "__")
+_INTERNAL_SUBSTRINGS = ("_fts",)
+
+
+def _is_internal_table(name: str) -> bool:
+    """True for storage-engine bookkeeping rather than declared data tables."""
+    return name.startswith(_INTERNAL_PREFIXES) or any(
+        s in name for s in _INTERNAL_SUBSTRINGS
+    )
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def declared_tables() -> set[str]:
+    """Table names declared by the Drizzle schema files."""
+    names: set[str] = set()
+    for path in sorted((_repo_root() / "src" / "db").glob(_DECLARED_SCHEMA_GLOB)):
+        names.update(_DECLARED_TABLE_RE.findall(path.read_text(encoding="utf-8")))
+    return names
+
+
+def _open_store(store: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"file:{store}?mode=ro", uri=True)
+
+
+def live_tables(store: Path) -> set[str]:
+    """Data tables present in the working store, excluding engine bookkeeping."""
+    conn = _open_store(store)
+    try:
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        return {r[0] for r in rows if not _is_internal_table(r[0])}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Working store checks
+# ---------------------------------------------------------------------------
+
+def check_schema_conformance(store: Path) -> dict[str, Any]:
+    """Every declared table exists, and no undeclared table does.
+
+    Both directions are reported. A comparison that only looked one way would
+    stay silent about half the drift.
+    """
+    if not store.exists():
+        return {
+            "status": "ADVISORY",
+            "detail": f"working store not present at {store}; skipped",
+        }
+
+    declared = declared_tables()
+    if not declared:
+        return {
+            "status": "ERROR",
+            "detail": "no tables could be read from the declared schema files",
+        }
+
+    live = live_tables(store)
+    missing = sorted(declared - live)
+    undeclared = sorted(live - declared)
+
+    if missing or undeclared:
+        parts = []
+        if missing:
+            parts.append(
+                f"{len(missing)} declared table(s) missing from the store: "
+                + ", ".join(missing)
+            )
+        if undeclared:
+            parts.append(
+                f"{len(undeclared)} table(s) in the store but not declared: "
+                + ", ".join(undeclared)
+            )
+        return {
+            "status": "FAIL",
+            "detail": "; ".join(parts),
+            "missing": missing,
+            "undeclared": undeclared,
+        }
+
+    return {
+        "status": "PASS",
+        "detail": f"{len(live)} table(s) match the declared schema",
+    }
+
+
+def check_lesson_markdown_link(store: Path) -> dict[str, Any]:
+    """The optional link from a topic to an external markdown lesson.
+
+    The link must exist, and must be optional. A required link would force
+    every topic to point at a lesson file, which the data model does not claim.
+    """
+    if not store.exists():
+        return {
+            "status": "ADVISORY",
+            "detail": f"working store not present at {store}; skipped",
+        }
+
+    conn = _open_store(store)
+    try:
+        try:
+            rows = conn.execute("PRAGMA table_info(lesson_assets)").fetchall()
+        except sqlite3.Error as exc:
+            return {"status": "FAIL", "detail": f"cannot inspect lesson_assets: {exc}"}
+    finally:
+        conn.close()
+
+    if not rows:
+        return {
+            "status": "FAIL",
+            "detail": "lesson_assets table is absent, so the markdown lesson link cannot exist",
+        }
+
+    # PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+    columns = {row[1]: {"notnull": row[3]} for row in rows}
+    if "file_path" not in columns:
+        return {
+            "status": "FAIL",
+            "detail": "lesson_assets has no file_path column to hold the markdown lesson link",
+        }
+    if columns["file_path"]["notnull"]:
+        return {
+            "status": "FAIL",
+            "detail": (
+                "lesson_assets.file_path is NOT NULL; the link to an external "
+                "markdown lesson must be optional"
+            ),
+        }
+
+    return {
+        "status": "PASS",
+        "detail": "lesson_assets.file_path exists and is optional (nullable)",
+    }
+
+
+WORKING_STORE_CHECKS = [
+    ("schema_conformance", check_schema_conformance),
+    ("lesson_markdown_link", check_lesson_markdown_link),
+]
+
+
+def run_working_store_checks(store: Path) -> list[dict[str, Any]]:
+    """Run the working-store checks, printed in the shared result format."""
+    results: list[dict[str, Any]] = []
+    for name, fn in WORKING_STORE_CHECKS:
+        try:
+            result = fn(store)
+        except Exception as exc:
+            result = {"status": "ERROR", "detail": str(exc)}
+        result["name"] = name
+        label = result.get("status", "ERROR")
+        print(f"[{label}] {name}: {result.get('detail', '')}")
+        results.append(result)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # All checks
 # ---------------------------------------------------------------------------
 
@@ -377,13 +569,23 @@ def run_all_checks(conn: psycopg.Connection) -> list[dict[str, Any]]:
 # CLI
 # ---------------------------------------------------------------------------
 
+DEFAULT_WORKING_STORE = _repo_root() / "data" / "omhas.db"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Read-only PostgreSQL integrity checks for the curriculum catalog.",
+        description="Read-only integrity checks for the curriculum catalog.",
     )
     parser.add_argument(
         "--database-url",
-        help="PostgreSQL connection URL (overrides $DB_URL env var)",
+        help="PostgreSQL connection URL (overrides $DB_URL env var). "
+        "Supplying one selects PostgreSQL mode.",
+    )
+    parser.add_argument(
+        "--sqlite",
+        default=str(DEFAULT_WORKING_STORE),
+        help=f"Path to the working SQLite store (default: {DEFAULT_WORKING_STORE}). "
+        "Used when no PostgreSQL URL is supplied.",
     )
     return parser
 
@@ -391,12 +593,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    url = _get_db_url(args)
-    conn = _connect(url)
-    try:
-        results = run_all_checks(conn)
-    finally:
-        conn.close()
+
+    url = getattr(args, "database_url", None) or os.environ.get("DB_URL")
+    if url:
+        conn = _connect(url)
+        try:
+            results = run_all_checks(conn)
+        finally:
+            conn.close()
+    else:
+        # No PostgreSQL URL: check the store that actually holds the data.
+        results = run_working_store_checks(Path(args.sqlite))
 
     failed = [r for r in results if r.get("status") in ("FAIL", "ERROR")]
     return 1 if failed else 0

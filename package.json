@@ -13,7 +13,8 @@
     "db:load": "python scripts/migrate-data.py",
     "db:studio": "npx drizzle-kit studio",
     "audit": "python scripts/db/audit-create-issues.py --dry-run",
-    "check": "python scripts/db/integrity-check.py"
+    "check": "python scripts/db/integrity-check.py",
+    "test": "python tests/test_integrity_check.py"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
