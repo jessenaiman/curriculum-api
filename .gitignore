@@ -12,7 +12,9 @@ coverage.xml
 .agents/
 .claude/
 data/
-docs/
+docs/*
+!docs/agents/
+!docs/adr/
 local/
 db-diagram.mmd
 skills-lock.json
